@@ -3,7 +3,7 @@
 ## Final URLs (Mandatory)
 - Web Application: http://web.ahmaddm.com
 - Monitoring (Grafana): https://monitoring.ahmaddm.com
-- GitHub Repository: https://github.com/AHMAD-DM-17/devops-bootcamp-project-AhmadAfif
+- GitHub Repository: https://github.com/AHMAD-DM-17/devops-bootcamp-project
 
 ## Overview
 Design, provision, configure, deploy, monitor, and document a complete DevOps-based system
