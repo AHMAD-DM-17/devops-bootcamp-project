@@ -10,5 +10,7 @@ Design, provision, configure, deploy, monitor, and document a complete DevOps-ba
 using industry-standard tools and practices.
 
 ## Step-by-step Setup Guide (Recommended)
+A. Prerequisites
 1. Create repo devops-bootcamp-project
 2. Create folder terraform, ansible and edit readme.md
+3. Create folder assets, include pdf and architecture diagram
