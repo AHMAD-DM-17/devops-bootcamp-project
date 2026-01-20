@@ -108,4 +108,139 @@ cat > bucket-policy.json <<EOF
 EOF
 
 aws s3api put-bucket-policy --bucket "$BUCKET" --policy file://bucket-policy.json
+```
+
+### C. Terraform Infrastructure Provisioning → VPC + EC2 + SSM + ECR
+This section provisions the required AWS infrastructure using Terraform under terraform/infra/, using the existing S3 state bucket as backend.
+  Key design goals
+      Repeatable: re-running Terraform produces the same infra (idempotent)
+      Safe: remote state + no sensitive config committed
+      Matches required architecture: VPC, subnets, NAT/IGW routing, 3 EC2 servers, SSM enabled, ECR repo
+
+#### 1) Create working folder structure
+This keeps code organized and matches the bootcamp expectation that Terraform lives under /terraform.
+```bash
+cd ~/devops-bootcamp-project
+mkdir -p terraform/infra
+```
+#### 2) Create backend configuration file
+This tells Terraform where the remote state lives.
+File: terraform/infra/backend.hcl
+    Backend is initialized once with terraform init -backend-config=backend.hcl
+    backend.hcl should not be committed because it’s environment-specific.
+
+#### 3) Add .gitignore rules for Terraform state & backend files
+Purpose for not commit .tfstate or local .terraform/ folders.
+
+#### 4) Create the Terraform backend + provider scaffolding
+Terraform needs an AWS provider and an S3 backend definition.
+  Files:
+    terraform/infra/backend.tf
+    terraform/infra/providers.tf
+    
+#### 5) Define variables + local constants (project defaults)
+Keeps the config readable and reduces duplication.
+  Files:
+      variables.tf (inputs)
+      locals.tf (CIDRs/IPs/tags)
+
+This project uses:
+      yourname = ahmadafif
+      key_name = AhmadAfifKey
+      region ap-southeast-1
+
+#### 6) Provision networking (VPC, subnets, IGW, NAT GW, routes)
+This creates the network foundation:
+  Public subnet for web server (with EIP)
+  Private subnet for ansible + monitoring
+  NAT allows private instances to reach internet (updates, packages) without public IP
+
+Resources included:
+  VPC 10.0.0.0/24
+  Public subnet 10.0.0.0/25
+  Private subnet 10.0.0.128/25
+  IGW for public subnet
+  NAT GW for private subnet outbound access
+  Route tables for public/private
+
+File: terraform/infra/vpc.tf
+
+#### 7) Configure security groups (least privilege)
+Controls what can talk to what.
+  Public SG (web):
+      Allow HTTP 80 from anywhere
+      Allow Node exporter 9100 only from monitoring server private IP (10.0.0.136/32)
+      Allow SSH 22 from inside VPC only (10.0.0.0/24)
+  
+  Private SG (ansible + monitoring): Allow SSH 22 from inside VPC only
+  File: terraform/infra/security_groups.tf
+
+#### 8) Enable SSM (Systems Manager) on all servers
+Required for secure management, especially for private instances with no public IP.
+Terraform does this by attaching an IAM role with: AmazonSSMManagedInstanceCore
+File: terraform/infra/iam_ssm.tf
+
+#### 9) Provision EC2 instances (3 servers) + Elastic IP for web
+Creates the required compute layer with fixed private IPs so:
+    Security rules are predictable
+    Ansible inventory is stable
+    Monitoring scrape targets are consistent
+
+Instances:
+Web server (public subnet): private IP 10.0.0.5, Elastic IP associated
+Ansible controller (private subnet): private IP 10.0.0.135, no public IP
+Monitoring server (private subnet): private IP 10.0.0.136, no public IP
+Additionally, user_data installs & starts SSM agent so the instances appear in AWS Systems Manager.
+
+File:terraform/infra/ec2.tf
+
+#### 10) Create ECR repository + outputs, then run Terraform
+ECR repo is needed to store container images for deployment
+outputs provide the values needed for Cloudflare DNS + Ansible inventory
+
+ECR: devops-bootcamp/final-project-ahmadafif
+Files: terraform/infra/ecr.tf
+terraform/infra/outputs.tf
+
+Run commands:
+```bash
+cd ~/devops-bootcamp-project/terraform/infra
+
+terraform init -backend-config=backend.hcl
+terraform fmt -recursive
+terraform validate
+terraform plan
+terraform apply
+```
+
+Verify Output : 
+```bash
+terraform output
+```
+
+Verify SSM Online :
+```bash
+aws ssm describe-instance-information \
+  --query "InstanceInformationList[].{InstanceId:InstanceId,PingStatus:PingStatus}" \
+  --output table
+```
+
+currently on ansible. ))
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
