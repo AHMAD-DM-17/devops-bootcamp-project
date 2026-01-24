@@ -1,0 +1,9 @@
+services:
+  final-project:
+    build: .
+    container_name: final-project
+    ports:
+      - "8080:80"
+    environment:
+      - USER_NAME=${USER_NAME:-DevOps Engineer}
+    restart: unless-stopped
