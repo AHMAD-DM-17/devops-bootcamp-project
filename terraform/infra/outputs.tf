@@ -15,5 +15,5 @@ output "monitoring_private_ip" {
 }
 
 output "ecr_repository_url" {
-  value = aws_ecr_repository.final_project.repository_url
+  value = aws_ecr_repository.final_project_repo.repository_url
 }

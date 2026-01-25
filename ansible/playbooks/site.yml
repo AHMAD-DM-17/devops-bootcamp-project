@@ -1,190 +1,231 @@
 ---
-- name: Web server (Docker + app + node_exporter)
+# ==============================
+# Play 1: Deploy Web App + Node Exporter
+# ==============================
+- name: Deploy web application + node_exporter
   hosts: web
-  become: true
+  become: yes
   vars:
-    aws_region: "{{ aws_region | default('ap-southeast-1') }}"
-    # Pass this in CLI: -e image_uri="...:manual" (or latest)
-    image_uri: "{{ image_uri | default('') }}"
+    # Set this to your ECR repo URI (no tag)
+    image_repo: "815103683012.dkr.ecr.ap-southeast-1.amazonaws.com/devops-bootcamp/final-project-ahmadafif"
+    # User requested a non-random tag
+    image_tag: "DevOps_Dockerimg_AhmadAfif"
+
+    # Display name in HTML via envsubst
+    user_name: "Ahmad Afif"
 
   tasks:
-    - name: Fail early if image_uri is not provided
-      fail:
-        msg: "image_uri is required. Example: -e image_uri='ACCOUNT.dkr.ecr.REGION.amazonaws.com/devops-bootcamp/final-project-xxx:manual'"
-      when: image_uri | length == 0
-
-    - name: Install base packages (no awscli here)
+    - name: Install dependencies
       apt:
         name:
-          - ca-certificates
-          - curl
-          - unzip
-          - jq
+          - docker.io
+          - awscli
         state: present
         update_cache: yes
 
-    # Keep get.docker.com (simple + usually works), but make it cleaner/idempotent
-    - name: Check if Docker exists
-      command: docker --version
-      register: docker_check
-      changed_when: false
-      failed_when: false
+    - name: Add ubuntu user to docker group
+      user:
+        name: ubuntu
+        groups: docker
+        append: yes
 
-    - name: Install Docker (get.docker.com) if missing
-      shell: |
-        set -e
-        curl -fsSL https://get.docker.com | sh
-      when: docker_check.rc != 0
-
-    - name: Enable and start Docker
+    - name: Ensure Docker is running
       service:
         name: docker
         state: started
-        enabled: true
+        enabled: yes
 
-    # AWS CLI v2 install (fixes your "No package matching awscli" error)
-    - name: Check if AWS CLI exists
-      command: aws --version
-      register: awscli_check
-      changed_when: false
-      failed_when: false
-
-    - name: Download AWS CLI v2 installer (zip)
-      get_url:
-        url: https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip
-        dest: /tmp/awscliv2.zip
-        mode: "0644"
-      when: awscli_check.rc != 0
-
-    - name: Unzip AWS CLI v2 installer
-      unarchive:
-        src: /tmp/awscliv2.zip
-        dest: /tmp
-        remote_src: yes
-      when: awscli_check.rc != 0
-
-    - name: Install AWS CLI v2
-      command: /tmp/aws/install --update
-      when: awscli_check.rc != 0
-
-    - name: Derive ECR registry from image_uri
-      set_fact:
-        ecr_registry: "{{ image_uri.split('/')[0] }}"
-
-    - name: Preflight - verify instance role can call ECR GetAuthorizationToken
-      command: aws ecr get-login-password --region "{{ aws_region }}"
-      register: ecr_pw
-      changed_when: false
-      failed_when: ecr_pw.rc != 0 or (ecr_pw.stdout | length) == 0
-
-    - name: Login to ECR (password via stdin)
+    - name: Login to ECR
       shell: |
-        set -e
-        printf '%s' '{{ ecr_pw.stdout }}' | docker login --username AWS --password-stdin '{{ ecr_registry }}'
-      no_log: true
-      changed_when: false
+        aws ecr get-login-password --region ap-southeast-1 | docker login --username AWS --password-stdin {{ image_repo.split('/')[0] }}
+      args:
+        executable: /bin/bash
 
-    - name: Pull application image
-      command: docker pull "{{ image_uri }}"
-      register: pull_result
-      changed_when: "'Downloaded newer image' in pull_result.stdout or 'Pull complete' in pull_result.stdout"
+    - name: Pull web image
+      shell: docker pull {{ image_repo }}:{{ image_tag }}
 
-    - name: Run web app container (port 80)
+    - name: Run web container (port 80)
       shell: |
-        set -e
-        docker rm -f my-devops-project >/dev/null 2>&1 || true
-        docker run -d --restart unless-stopped \
-          --name my-devops-project \
-          -p 80:80 \
-          "{{ image_uri }}"
-      changed_when: true
+        docker rm -f web-app || true
+        docker run -d --name web-app -p 80:80 -e USER_NAME="{{ user_name }}" {{ image_repo }}:{{ image_tag }}
 
-    - name: Run node_exporter (metrics on 9100)
+    - name: Run node_exporter container (port 9100)
       shell: |
-        set -e
-        docker rm -f node_exporter >/dev/null 2>&1 || true
-        docker run -d --restart unless-stopped \
-          --name node_exporter \
-          --net=host --pid=host \
-          -v "/:/host:ro,rslave" \
-          prom/node-exporter --path.rootfs=/host
-      changed_when: true
+        docker rm -f node-exporter || true
+        docker run -d --name node-exporter --net="host" prom/node-exporter:latest
+      args:
+        executable: /bin/bash
 
-
-- name: Monitoring server (Prometheus + Grafana)
+# ==============================
+# Play 2: Deploy Monitoring Stack + Cloudflare Tunnel
+# ==============================
+- name: Deploy Prometheus + Grafana (persistent) + Cloudflare Tunnel
   hosts: monitoring
-  become: true
+  become: yes
   vars:
-    web_private_ip: "{{ web_private_ip | default('10.0.0.5') }}"
+    # Grafana credentials (persisted via volume; used on first init if data dir is empty)
+    grafana_admin_user: "admin"
+    grafana_admin_password: "admin"
+
+    # Node Exporter Full dashboard (ID 1860) download endpoint
+    # Pinning a revision keeps automation stable; you can update revision later if desired.
+    node_exporter_full_dashboard_url: "https://grafana.com/api/dashboards/1860/revisions/37/download"
+
+    # Pass this in at runtime:
+    #   ansible-playbook ... -e cloudflare_tunnel_token="$(terraform output -raw cloudflare_tunnel_token)"
+    cloudflare_tunnel_token: ""
+
+    # Prometheus scrape target (auto-resolves from inventory)
+    web_target: "{{ hostvars[groups['web'][0]].ansible_host | default(groups['web'][0]) }}:9100"
 
   tasks:
-    - name: Install base packages
+    # ---- Docker + compose ----
+    - name: Install dependencies
       apt:
         name:
-          - ca-certificates
+          - docker.io
+          - docker-compose-plugin
           - curl
-          - unzip
+          - gnupg
+          - lsb-release
         state: present
         update_cache: yes
 
-    - name: Check if Docker exists
-      command: docker --version
-      register: docker_check
-      changed_when: false
-      failed_when: false
-
-    - name: Install Docker (get.docker.com) if missing
-      shell: |
-        set -e
-        curl -fsSL https://get.docker.com | sh
-      when: docker_check.rc != 0
-
-    - name: Enable and start Docker
+    - name: Ensure Docker is running
       service:
         name: docker
         state: started
-        enabled: true
+        enabled: yes
 
-    - name: Create monitoring directory
+    # ---- Prometheus config ----
+    - name: Create monitoring directories
       file:
-        path: /opt/monitoring
+        path: "{{ item }}"
         state: directory
         mode: "0755"
+      loop:
+        - /opt/monitoring
+        - /opt/monitoring/prometheus_data
+        - /opt/monitoring/grafana
+        - /opt/monitoring/grafana/data
+        - /opt/monitoring/grafana/dashboards
+        - /opt/monitoring/grafana/provisioning/datasources
+        - /opt/monitoring/grafana/provisioning/dashboards
 
-    - name: Prometheus config (scrape web node_exporter)
+    - name: Write Prometheus config
       copy:
         dest: /opt/monitoring/prometheus.yml
-        mode: "0644"
         content: |
           global:
             scrape_interval: 15s
+
           scrape_configs:
             - job_name: "web-node"
               static_configs:
-                - targets: ["{{ web_private_ip }}:9100"]
+                - targets: ["{{ web_target }}"]
 
-    - name: Docker compose for Prometheus + Grafana
+    # ---- Grafana provisioning (datasource + dashboard) ----
+    - name: Provision Prometheus datasource in Grafana
+      copy:
+        dest: /opt/monitoring/grafana/provisioning/datasources/prometheus.yml
+        content: |
+          apiVersion: 1
+          datasources:
+            - name: Prometheus
+              type: prometheus
+              access: proxy
+              url: http://prometheus:9090
+              isDefault: true
+              editable: false
+
+    - name: Provision dashboard provider in Grafana
+      copy:
+        dest: /opt/monitoring/grafana/provisioning/dashboards/dashboards.yml
+        content: |
+          apiVersion: 1
+          providers:
+            - name: "default"
+              orgId: 1
+              folder: ""
+              type: file
+              disableDeletion: false
+              editable: true
+              options:
+                path: /var/lib/grafana/dashboards
+
+    - name: Download Node Exporter Full dashboard JSON
+      get_url:
+        url: "{{ node_exporter_full_dashboard_url }}"
+        dest: /opt/monitoring/grafana/dashboards/node-exporter-full.json
+        mode: "0644"
+
+    - name: Fix Grafana data directory ownership (UID 472 inside container)
+      command: chown -R 472:472 /opt/monitoring/grafana
+      changed_when: false
+
+    # ---- docker-compose with localhost bind + persistent volumes ----
+    - name: Create docker-compose file for Prometheus + Grafana
       copy:
         dest: /opt/monitoring/docker-compose.yml
-        mode: "0644"
         content: |
           services:
             prometheus:
               image: prom/prometheus
               volumes:
-                - /opt/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+                - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+                - ./prometheus_data:/prometheus
               ports:
-                - "9090:9090"
-              restart: unless-stopped
-            grafana:
-              image: grafana/grafana
-              ports:
-                - "3000:3000"
+                - "127.0.0.1:9090:9090"
               restart: unless-stopped
 
-    - name: Start monitoring stack
+            grafana:
+              image: grafana/grafana
+              environment:
+                - GF_SECURITY_ADMIN_USER={{ grafana_admin_user }}
+                - GF_SECURITY_ADMIN_PASSWORD={{ grafana_admin_password }}
+              volumes:
+                - ./grafana/data:/var/lib/grafana
+                - ./grafana/provisioning:/etc/grafana/provisioning:ro
+                - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+              ports:
+                - "127.0.0.1:3000:3000"
+              depends_on:
+                - prometheus
+              restart: unless-stopped
+
+    - name: Start Prometheus + Grafana
       shell: |
-        set -e
         cd /opt/monitoring
         docker compose up -d
-      changed_when: true
+      args:
+        executable: /bin/bash
+
+    # ---- Cloudflare Tunnel (cloudflared) ----
+    - name: Fail if Cloudflare tunnel token is not provided
+      fail:
+        msg: "cloudflare_tunnel_token is empty. Pass it from Terraform output."
+      when: cloudflare_tunnel_token | length == 0
+
+    - name: Install cloudflared (Cloudflare Tunnel connector)
+      shell: |
+        set -e
+        if ! command -v cloudflared >/dev/null 2>&1; then
+          mkdir -p /usr/share/keyrings
+          curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg | gpg --dearmor -o /usr/share/keyrings/cloudflare-main.gpg
+          echo "deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared $(lsb_release -cs) main" > /etc/apt/sources.list.d/cloudflared.list
+          apt-get update
+          apt-get install -y cloudflared
+        fi
+      args:
+        executable: /bin/bash
+
+    - name: Install cloudflared as a systemd service using the tunnel token
+      shell: |
+        set -e
+        if [ ! -f /etc/systemd/system/cloudflared.service ] && [ ! -f /lib/systemd/system/cloudflared.service ]; then
+          cloudflared service install "{{ cloudflare_tunnel_token }}"
+        fi
+        systemctl daemon-reload
+        systemctl enable --now cloudflared
+      args:
+        executable: /bin/bash

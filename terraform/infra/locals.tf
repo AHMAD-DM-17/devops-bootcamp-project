@@ -3,7 +3,8 @@ data "aws_availability_zones" "available" {
 }
 
 locals {
-  az = data.aws_availability_zones.available.names[0]
+  prefix = "devops-bootcamp"
+  az     = data.aws_availability_zones.available.names[0]
 
   vpc_cidr            = "10.0.0.0/24"
   public_subnet_cidr  = "10.0.0.0/25"
@@ -18,5 +19,6 @@ locals {
     Owner   = local.owner
   }
 
-  owner = var.yourname
+  owner = lower(replace(var.yourname, " ", ""))
+
 }

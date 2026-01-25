@@ -39,7 +39,7 @@ resource "aws_instance" "web" {
   key_name               = var.key_name
 
   associate_public_ip_address = false
-  iam_instance_profile        = aws_iam_instance_profile.ec2_profile.name
+  iam_instance_profile        = aws_iam_instance_profile.ssm_instance_profile.name
   user_data                   = local.user_data_common
 
   metadata_options {
@@ -68,7 +68,7 @@ resource "aws_instance" "ansible" {
   key_name               = var.key_name
 
   associate_public_ip_address = false
-  iam_instance_profile        = aws_iam_instance_profile.ec2_profile.name
+  iam_instance_profile        = aws_iam_instance_profile.ssm_instance_profile.name
   user_data                   = local.user_data_common
 
   metadata_options {
@@ -87,7 +87,7 @@ resource "aws_instance" "monitoring" {
   key_name               = var.key_name
 
   associate_public_ip_address = false
-  iam_instance_profile        = aws_iam_instance_profile.ec2_profile.name
+  iam_instance_profile        = aws_iam_instance_profile.ssm_instance_profile.name
   user_data                   = local.user_data_common
 
   metadata_options {
